@@ -22,7 +22,7 @@ import glob
 import torch
 from tokenizers import ByteLevelBPETokenizer, CharBPETokenizer, BertWordPieceTokenizer
 from transformers import (AutoConfig, BertForMaskedLM, BertTokenizerFast, DataCollatorForLanguageModeling,
-                          Trainer, TrainingArguments)
+                          Trainer, TrainingArguments, TrainerCallback)
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
@@ -140,11 +140,24 @@ def train_custom_tokenizer(data_folder="data", vocab_size=3000, tokenizer_type="
     return tokenizer
 
 
-def train_bert_model(data_folder="data", pretrained_tokenizer_path=None, epochs=1, batch_size=8):
+def train_bert_model(data_folder="data", wandb_entity = None,pretrained_tokenizer_path=None, epochs=1, batch_size=8):
     """
     Train a BERT model from scratch (small config) on the data in data_folder using MLM.
     """
     print("\n=== Training a BERT model on MLM ===")
+
+    class LossPlotCallback(TrainerCallback):
+        def __init__(self):
+            super().__init__()
+            self.train_loss_history = []
+            self.steps_history = []
+
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            # logs typically contains 'loss', 'learning_rate', etc.
+            if 'loss' in logs:
+                self.train_loss_history.append(logs['loss'])
+                self.steps_history.append(state.global_step)
+
     # Initialize Weights & Biases for logging (W&B offers a free tier for individual use)
     if wandb_entity:
         wandb.init(project="bert-mlm-training", entity=wandb_entity, config={"epochs": epochs, "batch_size": batch_size})
@@ -202,15 +215,27 @@ def train_bert_model(data_folder="data", pretrained_tokenizer_path=None, epochs=
         report_to=["wandb"]
     )
 
+    loss_callback = LossPlotCallback()
     trainer = Trainer(
         model=model,
         args=training_args,
         data_collator=data_collator,
-        train_dataset=train_dataset
+        train_dataset=train_dataset,
+        callbacks=[loss_callback]
     )
 
     # Train the model
     trainer.train()
+
+    # Plot the loss after training
+    plt.figure()
+    plt.plot(loss_callback.steps_history, loss_callback.train_loss_history, label='Training Loss')
+    plt.xlabel('Training Step')
+    plt.ylabel('Loss')
+    plt.title('Training Loss Over Steps')
+    plt.legend()
+    plt.show()
+
     print("Training complete.")
 
     # Save the model
@@ -272,11 +297,216 @@ def visualize_embeddings(tokenizer_path="bert_mlm_model", num_tokens=50):
     plt.show()
 
 
+
+def visualize_specific_words(tokenizer_path="bert_mlm_model", words=None):
+    """
+    Visualize specific user-provided words in a 3D projection using TSNE.
+    Even if a word splits into multiple sub-tokens, we average those embeddings
+    to represent the entire word.
+    """
+    if not words:
+        print("No words provided. Please pass a list of words to visualize.")
+        return
+
+    print("\n=== Visualizing Specific Words in 3D ===")
+    print("Words:", words)
+
+    # 1. Load tokenizer and model
+    tokenizer = BertTokenizerFast.from_pretrained(tokenizer_path)
+    model = BertForMaskedLM.from_pretrained(tokenizer_path)
+    model.eval()
+
+    # 2. Get the embedding matrix
+    embedding_matrix = model.bert.embeddings.word_embeddings.weight.data.cpu().numpy()
+
+    # 3. For each user word, tokenize into subwords, then average their embeddings
+    valid_words = []
+    word_vectors = []
+
+    for w in words:
+        # Convert the word into subword tokens
+        sub_tokens = tokenizer.tokenize(w)
+        if not sub_tokens:
+            print(f"'{w}' yielded no sub tokens. Skipping.")
+            continue
+
+        # Convert sub-tokens to IDs
+        sub_token_ids = tokenizer.convert_tokens_to_ids(sub_tokens)
+        # Gather each sub-token's embedding
+        sub_embeddings = embedding_matrix[sub_token_ids]  # shape: (num_subtokens, hidden_dim)
+        # Average them to get a single vector for the entire word
+        avg_embedding = sub_embeddings.mean(axis=0)
+
+        word_vectors.append(avg_embedding)
+        valid_words.append(w)
+
+    if not word_vectors:
+        print("No valid tokens found for the given words.")
+        return
+
+    word_vectors = np.array(word_vectors)
+    n_samples = word_vectors.shape[0]
+
+    # 4. TSNE to 3D
+    # Perplexity must be < n_samples, so pick a smaller perplexity if needed
+    perplexity = min(30, max(2, n_samples - 1))
+    tsne = TSNE(n_components=3, random_state=42, perplexity=perplexity)
+    reduced_embeddings = tsne.fit_transform(word_vectors)
+
+    # 5. Plot
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    ax.scatter(
+        reduced_embeddings[:, 0],
+        reduced_embeddings[:, 1],
+        reduced_embeddings[:, 2]
+    )
+
+    # Annotate each point with the corresponding word
+    for i, word in enumerate(valid_words):
+        ax.text(
+            reduced_embeddings[i, 0],
+            reduced_embeddings[i, 1],
+            reduced_embeddings[i, 2],
+            word
+        )
+
+    plt.title("3D Visualization of Specific Words (TSNE)")
+    plt.show()
+
+def summarize_data_statistics(data_folder="data"):
+    """
+    Reads all .txt files in the given data_folder and prints summary statistics:
+    total lines, total words, total sentences.
+    """
+    import glob, os
+    total_lines = 0
+    total_words = 0
+    total_sentences = 0
+
+    txt_files = glob.glob(os.path.join(data_folder, '*.txt'))
+    for txt_file in txt_files:
+        with open(txt_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                total_lines += 1
+                words_in_line = line.split()
+                total_words += len(words_in_line)
+                sentences_in_line = [s for s in line.split('.') if s.strip()]
+                total_sentences += len(sentences_in_line)
+
+    print("\n=== Data Summary ===")
+    print(f"Total lines: {total_lines}")
+    print(f"Total words: {total_words}")
+    print(f"Total sentences (naive): {total_sentences}")
+    print("====================\n")
+
+
+def visualize_word_pairs_3d(tokenizer_path="bert_mlm_model", pairs=None):
+    """
+    Visualize word pairs in 3D using TSNE. Each pair is drawn as a line
+    from the first word's point to the second word's point.
+
+    :param tokenizer_path: Path to the trained BERT tokenizer & model.
+    :param pairs: List of (word1, word2) tuples, e.g. [("ship", "water"), ("car", "road")]
+    """
+    if not pairs:
+        print("No pairs provided. Please pass a list of (word1, word2) tuples.")
+        return
+
+    # 1. Gather all unique words from the pairs
+    unique_words = set()
+    for (w1, w2) in pairs:
+        unique_words.add(w1)
+        unique_words.add(w2)
+    unique_words = list(unique_words)  # fix an order
+
+    print("\n=== Visualizing Word Pairs in 3D ===")
+    print("Word Pairs:", pairs)
+
+    # 2. Load tokenizer and model
+    tokenizer = BertTokenizerFast.from_pretrained(tokenizer_path)
+    model = BertForMaskedLM.from_pretrained(tokenizer_path)
+    model.eval()
+
+    # 3. Extract embeddings for each unique word
+    #    If a word splits into multiple subwords, we'll average them to get a single vector.
+    embedding_matrix = model.bert.embeddings.word_embeddings.weight.data.cpu().numpy()
+
+    def get_average_embedding(word):
+        sub_tokens = tokenizer.tokenize(word)
+        if not sub_tokens:
+            return None
+        sub_ids = tokenizer.convert_tokens_to_ids(sub_tokens)
+        sub_embs = embedding_matrix[sub_ids]  # shape (num_subtokens, hidden_dim)
+        return sub_embs.mean(axis=0)
+
+    word_vectors = []
+    valid_words = []
+
+    for w in unique_words:
+        vec = get_average_embedding(w)
+        if vec is not None:
+            word_vectors.append(vec)
+            valid_words.append(w)
+        else:
+            print(f"'{w}' not found in vocabulary (will be skipped).")
+
+    if len(word_vectors) < 2:
+        print("Not enough valid words to plot.")
+        return
+
+    word_vectors = np.array(word_vectors)
+    n_samples = word_vectors.shape[0]
+
+    # 4. TSNE in 3D
+    #    If perplexity is too large for a small set, reduce it:
+    from math import floor
+    perplexity = min(30, max(2, n_samples - 1))
+    tsne = TSNE(n_components=3, random_state=42, perplexity=perplexity)
+    coords_3d = tsne.fit_transform(word_vectors)  # shape [n_samples, 3]
+
+    # 5. Plot each point
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    ax.scatter(coords_3d[:, 0], coords_3d[:, 1], coords_3d[:, 2], color='blue')
+
+    # Build a dict to map each valid word -> its 3D coordinates
+    word_to_coords = {w: coords_3d[i] for i, w in enumerate(valid_words)}
+
+    # Label each point
+    for i, w in enumerate(valid_words):
+        x, y, z = coords_3d[i]
+        ax.text(x, y, z, w, fontsize=9)
+
+    # 6. Draw lines for each pair
+    for (w1, w2) in pairs:
+        if w1 in word_to_coords and w2 in word_to_coords:
+            x1, y1, z1 = word_to_coords[w1]
+            x2, y2, z2 = word_to_coords[w2]
+
+            # Plot a dashed line from w1 to w2
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                [z1, z2],
+                linestyle='dashed',
+                color='gray'
+            )
+
+    ax.set_title("3D Word Pair Visualization (TSNE)")
+    plt.show()
+
 if __name__ == "__main__":
     # 1) Demonstrate subword tokenization
-    demonstrate_subword_tokenization("Hello world, how are you today? This is a test.")
+    #demonstrate_subword_tokenization("Hello world, how are you today? This is a test.")
+
+    # 2) Summarize data
+    summarize_data_statistics("data")
     '''
-    # 2) Train a custom tokenizer from text files in data/ folder.
+    # 3) Train a custom tokenizer from text files in data/ folder.
     #    For demonstration, use WordPiece.
     custom_tokenizer = train_custom_tokenizer(
         data_folder="data",
@@ -284,7 +514,7 @@ if __name__ == "__main__":
         tokenizer_type="wordpiece"
     )
 
-    # 3) Train a small BERT model with masked language modeling.
+    # 4) Train a small BERT model with masked language modeling.
     #    Use the newly created tokenizer if it was created successfully.
     if custom_tokenizer:
         # Hugging Face expects the saved tokenizer to be in a folder with vocab.txt, etc.
@@ -296,15 +526,28 @@ if __name__ == "__main__":
     train_bert_model(
         data_folder="data",
         pretrained_tokenizer_path=pretrained_path,
-        epochs=1,
+        epochs=10,
         batch_size=8
     )
 
-    # 4) Visualize embeddings of words in 3D.
+    # 5) Visualize embeddings of words in 3D.
     #    Use the newly trained BERT model and tokenizer in "bert_mlm_model".
     visualize_embeddings(
         tokenizer_path="bert_mlm_model",
         num_tokens=50
+    )'''
+
+    # 6) Visualize a few user-provided words in 3D
+    words_to_check = ["suspense","horror","thriller"]
+    #visualize_specific_words(
+    #    tokenizer_path="bert_mlm_model",
+    #    words=words_to_check
+    #)
+
+    # Example usage:
+    pairs_to_plot = [("him", "he"), ("king", "queen"),("man","women")]
+    visualize_word_pairs_3d(
+        tokenizer_path="bert_mlm_model",
+        pairs=pairs_to_plot
     )
-    '''
     print("\nAll tasks completed.")

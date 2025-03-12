@@ -1,2 +1,4 @@
 # .gitignore
 .env
+bert_mlm_output
+wandb

@@ -3,6 +3,8 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/bert_mlm_output" />
+      <excludeFolder url="file://$MODULE_DIR$/wandb" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.9 (TextMagik)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
