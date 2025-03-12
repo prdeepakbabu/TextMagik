@@ -27,6 +27,12 @@ from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import numpy as np
+import wandb
+from dotenv import load_dotenv
+
+load_dotenv()  # This will read in variables from .env
+# Optionally, read the key directly:
+api_key = os.getenv('WANDB_API_KEY')
 
 
 class TextDataset(Dataset):
@@ -139,6 +145,11 @@ def train_bert_model(data_folder="data", pretrained_tokenizer_path=None, epochs=
     Train a BERT model from scratch (small config) on the data in data_folder using MLM.
     """
     print("\n=== Training a BERT model on MLM ===")
+    # Initialize Weights & Biases for logging (W&B offers a free tier for individual use)
+    if wandb_entity:
+        wandb.init(project="bert-mlm-training", entity=wandb_entity, config={"epochs": epochs, "batch_size": batch_size})
+    else:
+        wandb.init(project="bert-mlm-training", config={"epochs": epochs, "batch_size": batch_size})
 
     # If a pretrained custom tokenizer is available, use it.
     # Otherwise, use 'bert-base-uncased' as a fallback.
@@ -187,7 +198,8 @@ def train_bert_model(data_folder="data", pretrained_tokenizer_path=None, epochs=
         save_steps=500,
         save_total_limit=2,
         logging_steps=50,
-        evaluation_strategy="no"  # For demonstration, turn off evaluation
+        evaluation_strategy="no",  # For demonstration, turn off evaluation
+        report_to=["wandb"]
     )
 
     trainer = Trainer(
@@ -263,7 +275,7 @@ def visualize_embeddings(tokenizer_path="bert_mlm_model", num_tokens=50):
 if __name__ == "__main__":
     # 1) Demonstrate subword tokenization
     demonstrate_subword_tokenization("Hello world, how are you today? This is a test.")
-
+    '''
     # 2) Train a custom tokenizer from text files in data/ folder.
     #    For demonstration, use WordPiece.
     custom_tokenizer = train_custom_tokenizer(
@@ -294,5 +306,5 @@ if __name__ == "__main__":
         tokenizer_path="bert_mlm_model",
         num_tokens=50
     )
-
+    '''
     print("\nAll tasks completed.")
