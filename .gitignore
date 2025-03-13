@@ -3,3 +3,5 @@
 bert_mlm_output
 wandb
 /GPT2/lora_gpt2_medical/
+/data/medical_chat_processed.txt
+data/medical_chat_processed.txt
