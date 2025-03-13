@@ -2,3 +2,4 @@
 .env
 bert_mlm_output
 wandb
+/GPT2/lora_gpt2_medical/
